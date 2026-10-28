@@ -1,0 +1,1716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Endless 3D European Street — Ink Sketch to Watercolor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #f3f0e8;
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+    }
+
+    #canvas-container {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Top-right paper toolbar matching the reference video */
+    .ui-toolbar {
+      position: fixed;
+      top: 18px;
+      right: 18px;
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      background: #f5f2ea;
+      border: 1px solid #d4cfc3;
+      border-radius: 3px;
+      box-shadow: 0 2px 8px rgba(35, 32, 26, 0.08);
+    }
+
+    .ui-btn {
+      appearance: none;
+      border: 1px solid transparent;
+      background: transparent;
+      color: #2c2c2e;
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      padding: 5px 10px;
+      border-radius: 2px;
+      cursor: pointer;
+      transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .ui-btn:hover {
+      background: #e8e3d7;
+      border-color: #c8c2b4;
+    }
+
+    .ui-btn.active {
+      background: #1c1c1e;
+      color: #f5f2ea;
+      border-color: #1c1c1e;
+    }
+
+    /* Subtle circular watercolor brush reticle */
+    #brush-reticle {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 36px;
+      height: 36px;
+      margin-left: -18px;
+      margin-top: -18px;
+      border: 1px solid rgba(35, 35, 40, 0.55);
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 20;
+      opacity: 0;
+      transition: opacity 0.2s ease, transform 0.12s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #brush-reticle::after {
+      content: '';
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: rgba(30, 30, 35, 0.7);
+    }
+
+    /* Subtle bottom-left helper toast that fades automatically */
+    #hint-pill {
+      position: fixed;
+      bottom: 18px;
+      left: 18px;
+      z-index: 25;
+      background: rgba(245, 242, 234, 0.9);
+      border: 1px solid #d4cfc3;
+      color: #4a4843;
+      padding: 6px 12px;
+      border-radius: 3px;
+      font-size: 11px;
+      pointer-events: none;
+      transition: opacity 0.6s ease;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+    }
+  </style>
+
+  <!-- Three.js + OrbitControls + BufferGeometryUtils -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.146.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.146.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.146.0/examples/js/utils/BufferGeometryUtils.js"></script>
+</head>
+<body>
+  <!-- Top-Right Control Bar -->
+  <div class="ui-toolbar" role="toolbar" aria-label="View and Sketch Controls">
+    <button id="btn-walk" class="ui-btn active" type="button">Street Walk [WASD]</button>
+    <button id="btn-orbit" class="ui-btn" type="button">Orbit View [C]</button>
+    <button id="btn-reset" class="ui-btn" type="button">Reset Sketch</button>
+  </div>
+
+  <!-- Circular Brush Reticle -->
+  <div id="brush-reticle"></div>
+
+  <!-- Subtle Controls Hint -->
+  <div id="hint-pill">
+    Walk: <b>WASD / Arrows / Scroll</b> &nbsp;•&nbsp; Look: <b>Drag Mouse</b> &nbsp;•&nbsp; Paint Watercolor: <b>Hover Details</b>
+  </div>
+
+  <!-- 3D Viewport Container -->
+  <div id="canvas-container"></div>
+
+  <script>
+    /**
+     * ENDLESS 3D EUROPEAN STREET — INK SKETCH TO WATERCOLOR
+     * -----------------------------------------------------
+     * Architecture & Shader System:
+     * 1. Toroidal 3D Volume Paint Texture (THREE.Data3DTexture):
+     *    Stores persistent 3D watercolor paint values in world space (X, Y, wrapped Z).
+     *    Walking proximity + mouse hover raycasting paint spherical brush dabs in real time.
+     * 2. Custom Watercolor & Paper-Shadow Shader:
+     *    Unpainted areas render as warm cold-press watercolor paper (#f3f0e8) that still
+     *    receives soft directional sunlight shadows (#dcd7cb) and herringbone paving patterns.
+     *    Painted areas bloom with multi-octave 3D simplex noise bleed, darkened pigment edges,
+     *    and rich Mediterranean/Parisian watercolor palettes.
+     * 3. Endless Procedural European Street Generator:
+     *    Builds winding street chunks with octagonal corner cafe turrets (Cobalt Blue,
+     *    Emerald Green, Terracotta Red), bistro tables & chairs, topiaries, recessed side
+     *    courtyards with tiered fountains, canvas awnings, overhead skybridges & vine trellises,
+     *    catenary wire lamps, and wrought-iron flower balconies.
+     */
+
+    window.onload = function () {
+      const container = document.getElementById('canvas-container');
+      const reticle = document.getElementById('brush-reticle');
+      const hintPill = document.getElementById('hint-pill');
+      const btnWalk = document.getElementById('btn-walk');
+      const btnOrbit = document.getElementById('btn-orbit');
+      const btnReset = document.getElementById('btn-reset');
+
+      // -------------------------------------------------------------------------
+      // 1. SCENE, CAMERA & RENDERER
+      // -------------------------------------------------------------------------
+      const PAPER_HEX = 0xf3f0e8;
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(PAPER_HEX);
+      scene.fog = new THREE.FogExp2(PAPER_HEX, 0.0145);
+
+      const camera = new THREE.PerspectiveCamera(
+        52,
+        window.innerWidth / window.innerHeight,
+        0.2,
+        140
+      );
+
+      const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        powerPreference: 'high-performance'
+      });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      container.appendChild(renderer.domElement);
+
+      // OrbitControls for [C] mode
+      const orbitControls = new THREE.OrbitControls(camera, renderer.domElement);
+      orbitControls.enableDamping = true;
+      orbitControls.dampingFactor = 0.06;
+      orbitControls.enabled = false;
+      orbitControls.maxPolarAngle = Math.PI * 0.49;
+      orbitControls.minDistance = 2;
+      orbitControls.maxDistance = 65;
+
+      // -------------------------------------------------------------------------
+      // 2. LIGHTING (Warm Directional Sunlight + Soft Fill)
+      // -------------------------------------------------------------------------
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.68);
+      scene.add(ambientLight);
+
+      const dirLight = new THREE.DirectionalLight(0xfffcf5, 0.72);
+      dirLight.castShadow = true;
+      dirLight.shadow.mapSize.width = 2048;
+      dirLight.shadow.mapSize.height = 2048;
+      dirLight.shadow.camera.near = 2;
+      dirLight.shadow.camera.far = 110;
+      const shadowExtent = 38;
+      dirLight.shadow.camera.left = -shadowExtent;
+      dirLight.shadow.camera.right = shadowExtent;
+      dirLight.shadow.camera.top = shadowExtent;
+      dirLight.shadow.camera.bottom = -shadowExtent;
+      dirLight.shadow.bias = -0.00045;
+      dirLight.shadow.normalBias = 0.02;
+      scene.add(dirLight);
+      scene.add(dirLight.target);
+
+      // -------------------------------------------------------------------------
+      // 3. TOROIDAL 3D WATERCOLOR PAINT VOLUME (THREE.Data3DTexture)
+      // -------------------------------------------------------------------------
+      // Covers X: [-32m, +32m], Y: [-2m, +30m], Z: 128m toroidal ring
+      const VOL_X = 128;
+      const VOL_Y = 64;
+      const VOL_Z = 256;
+      const WORLD_X_MIN = -32.0;
+      const WORLD_X_SIZE = 64.0;
+      const WORLD_Y_MIN = -2.0;
+      const WORLD_Y_SIZE = 32.0;
+      const WORLD_Z_SIZE = 128.0; // Wraps seamlessly every 128 meters
+
+      const paintData = new Uint8Array(VOL_X * VOL_Y * VOL_Z);
+      const paintTexture3D = new THREE.Data3DTexture(paintData, VOL_X, VOL_Y, VOL_Z);
+      paintTexture3D.format = THREE.RedFormat;
+      paintTexture3D.type = THREE.UnsignedByteType;
+      paintTexture3D.minFilter = THREE.LinearFilter;
+      paintTexture3D.magFilter = THREE.LinearFilter;
+      paintTexture3D.wrapS = THREE.ClampToEdgeWrapping;
+      paintTexture3D.wrapT = THREE.ClampToEdgeWrapping;
+      paintTexture3D.wrapR = THREE.RepeatWrapping;
+      paintTexture3D.unpackAlignment = 1;
+      paintTexture3D.needsUpdate = true;
+
+      /**
+       * Paints a soft 3D sphere of watercolor into the persistent 3D volume texture.
+       */
+      function paintSphereInVolume(wx, wy, wz, radius, strength = 1.0) {
+        const vxCenter = ((wx - WORLD_X_MIN) / WORLD_X_SIZE) * VOL_X;
+        const vyCenter = ((wy - WORLD_Y_MIN) / WORLD_Y_SIZE) * VOL_Y;
+        const vzCenter = (wz / WORLD_Z_SIZE) * VOL_Z;
+
+        const rx = Math.ceil((radius / WORLD_X_SIZE) * VOL_X);
+        const ry = Math.ceil((radius / WORLD_Y_SIZE) * VOL_Y);
+        const rz = Math.ceil((radius / WORLD_Z_SIZE) * VOL_Z);
+
+        const ixMin = Math.max(0, Math.floor(vxCenter - rx));
+        const ixMax = Math.min(VOL_X - 1, Math.ceil(vxCenter + rx));
+        const iyMin = Math.max(0, Math.floor(vyCenter - ry));
+        const iyMax = Math.min(VOL_Y - 1, Math.ceil(vyCenter + ry));
+        const izMin = Math.floor(vzCenter - rz);
+        const izMax = Math.ceil(vzCenter + rz);
+
+        const invRx = 1.0 / Math.max(0.001, (radius / WORLD_X_SIZE) * VOL_X);
+        const invRy = 1.0 / Math.max(0.001, (radius / WORLD_Y_SIZE) * VOL_Y);
+        const invRz = 1.0 / Math.max(0.001, (radius / WORLD_Z_SIZE) * VOL_Z);
+
+        const xyStride = VOL_X * VOL_Y;
+        let modified = false;
+
+        for (let iz = izMin; iz <= izMax; iz++) {
+          const dz = (iz + 0.5 - vzCenter) * invRz;
+          const dz2 = dz * dz;
+          if (dz2 >= 1.0) continue;
+
+          // Toroidal wrap on Z index
+          const wrappedZ = ((iz % VOL_Z) + VOL_Z) % VOL_Z;
+          const zOffset = wrappedZ * xyStride;
+
+          for (let iy = iyMin; iy <= iyMax; iy++) {
+            const dy = (iy + 0.5 - vyCenter) * invRy;
+            const dzy2 = dz2 + dy * dy;
+            if (dzy2 >= 1.0) continue;
+
+            const yOffset = zOffset + iy * VOL_X;
+
+            for (let ix = ixMin; ix <= ixMax; ix++) {
+              const dx = (ix + 0.5 - vxCenter) * invRx;
+              const distSq = dzy2 + dx * dx;
+              if (distSq < 1.0) {
+                const falloff = Math.pow(1.0 - distSq, 0.75) * strength;
+                const addVal = Math.floor(falloff * 255);
+                const idx = yOffset + ix;
+                const current = paintData[idx];
+                if ( current < 255 ) {
+                  const next = Math.min(255, current + addVal);
+                  if (next > current) {
+                    paintData[idx] = next;
+                    modified = true;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (modified) {
+          paintTexture3D.needsUpdate = true;
+        }
+      }
+
+      /**
+       * Clears a toroidal Z-slice far ahead of the player so recycled Z space is fresh sketch.
+       */
+      let lastClearedZSlice = null;
+      function clearVolumeSliceAtZ(worldZ) {
+        const vz = Math.floor((worldZ / WORLD_Z_SIZE) * VOL_Z);
+        const wrappedZ = ((vz % VOL_Z) + VOL_Z) % VOL_Z;
+        if (wrappedZ === lastClearedZSlice) return;
+        lastClearedZSlice = wrappedZ;
+
+        const xyStride = VOL_X * VOL_Y;
+        const start = wrappedZ * xyStride;
+        paintData.fill(0, start, start + xyStride);
+        paintTexture3D.needsUpdate = true;
+      }
+
+      // -------------------------------------------------------------------------
+      // 4. WATERCOLOR + INK SKETCH SHADERS
+      // -------------------------------------------------------------------------
+      const sharedUniforms = {
+        uPaintVolume: { value: paintTexture3D },
+        uWorldMin: { value: new THREE.Vector3(WORLD_X_MIN, WORLD_Y_MIN, 0.0) },
+        uWorldSize: { value: new THREE.Vector3(WORLD_X_SIZE, WORLD_Y_SIZE, WORLD_Z_SIZE) },
+        uPaperColor: { value: new THREE.Color(0xf3f0e8) },
+        uPaperShadowColor: { value: new THREE.Color(0xdcd7cb) }
+      };
+
+      // GLSL 3D Value Noise & FBM for organic watercolor bleed edges
+      const noiseGLSL = `
+        precision highp sampler3D;
+        uniform highp sampler3D uPaintVolume;
+        uniform vec3 uWorldMin;
+        uniform vec3 uWorldSize;
+        uniform vec3 uPaperColor;
+        uniform vec3 uPaperShadowColor;
+
+        float hash31(vec3 p) {
+          p = fract(p * 0.1031);
+          p += dot(p, p.yzx + 33.33);
+          return fract((p.x + p.y) * p.z);
+        }
+
+        float noise3D(vec3 x) {
+          vec3 i = floor(x);
+          vec3 f = fract(x);
+          f = f * f * (3.0 - 2.0 * f);
+
+          return mix(
+            mix(
+              mix(hash31(i + vec3(0,0,0)), hash31(i + vec3(1,0,0)), f.x),
+              mix(hash31(i + vec3(0,1,0)), hash31(i + vec3(1,1,0)), f.x),
+              f.y
+            ),
+            mix(
+              mix(hash31(i + vec3(0,0,1)), hash31(i + vec3(1,0,1)), f.x),
+              mix(hash31(i + vec3(0,1,1)), hash31(i + vec3(1,1,1)), f.x),
+              f.y
+            ),
+            f.z
+          );
+        }
+
+        float fbm3D(vec3 p) {
+          float v = 0.0;
+          float a = 0.5;
+          v += a * noise3D(p); p = p * 2.03 + vec3(13.1, 7.7, 5.3); a *= 0.5;
+          v += a * noise3D(p); p = p * 2.01 + vec3(3.7, 19.3, 11.1); a *= 0.5;
+          v += a * noise3D(p);
+          return v;
+        }
+
+        float sampleWatercolorMask(vec3 worldPos, out float edgeDarkening) {
+          // Perturb lookup coordinate slightly for organic wet wash distortion
+          float nLarge = fbm3D(worldPos * 0.65) - 0.5;
+          float nFine  = fbm3D(worldPos * 2.40) - 0.5;
+          vec3 warpedPos = worldPos + vec3(nLarge * 1.15 + nFine * 0.35);
+
+          vec3 uvw;
+          uvw.x = clamp((warpedPos.x - uWorldMin.x) / uWorldSize.x, 0.004, 0.996);
+          uvw.y = clamp((warpedPos.y - uWorldMin.y) / uWorldSize.y, 0.004, 0.996);
+          uvw.z = fract(warpedPos.z / uWorldSize.z);
+
+          float rawPaint = texture(uPaintVolume, uvw).r;
+
+          // Modulate threshold with paper grain noise so edges bleed like wet pigment
+          float bleedSignal = rawPaint + (nLarge * 0.24 + nFine * 0.14) * smoothstep(0.02, 0.35, rawPaint);
+          float mask = smoothstep(0.18, 0.56, bleedSignal);
+
+          // Wet-on-dry watercolor pigment ring along the boundary of painted washes
+          float ring = smoothstep(0.16, 0.38, bleedSignal) * (1.0 - smoothstep(0.38, 0.66, bleedSignal));
+          edgeDarkening = ring * 4.0;
+          return mask;
+        }
+      `;
+
+      // Solid Watercolor Material with native Three.js Directional Shadows
+      const streetMaterial = new THREE.MeshLambertMaterial({
+        vertexColors: true,
+        side: THREE.FrontSide
+      });
+
+      streetMaterial.onBeforeCompile = (shader) => {
+        shader.uniforms.uPaintVolume = sharedUniforms.uPaintVolume;
+        shader.uniforms.uWorldMin = sharedUniforms.uWorldMin;
+        shader.uniforms.uWorldSize = sharedUniforms.uWorldSize;
+        shader.uniforms.uPaperColor = sharedUniforms.uPaperColor;
+        shader.uniforms.uPaperShadowColor = sharedUniforms.uPaperShadowColor;
+
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <common>',
+          `
+          #include <common>
+          attribute float aMatType;
+          varying vec3 vWorldPos;
+          varying vec3 vWorldNormal;
+          varying float vMatType;
+          `
+        );
+
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <worldpos_vertex>',
+          `
+          #include <worldpos_vertex>
+          vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);
+          vMatType = aMatType;
+          `
+        );
+
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          `
+          #include <common>
+          varying vec3 vWorldPos;
+          varying vec3 vWorldNormal;
+          varying float vMatType;
+          ${noiseGLSL}
+          `
+        );
+
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <dithering_fragment>',
+          `
+          float edgeRing = 0.0;
+          float paintMask = sampleWatercolorMask(vWorldPos, edgeRing);
+
+          // Paper grain micro-texture
+          float paperGrain = (fbm3D(vWorldPos * 5.5) - 0.5) * 0.045;
+
+          // Estimate shadow/light factor from Lambert outgoingLight vs diffuseColor
+          float lightLuminance = dot(outgoingLight, vec3(0.299, 0.587, 0.114)) /
+                                 max(0.05, dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114)));
+          float shadowFactor = smoothstep(0.58, 0.88, lightLuminance);
+
+          // Procedural Herringbone Cobblestone modulation on street/courtyard floor (vMatType > 2.5)
+          float cobblePattern = 0.0;
+          if (vMatType > 2.5) {
+            vec2 uv = vWorldPos.xz * 0.85;
+            float zig = abs(fract(uv.x + floor(uv.y) * 0.5) - 0.5) * 2.0;
+            float stone = step(0.45, fract(uv.y * 0.5 + zig * 0.5));
+            cobblePattern = (stone - 0.5) * 0.032;
+          }
+
+          // Unpainted state: warm watercolor paper that still receives crisp directional shadows!
+          vec3 unpaintedCol = mix(uPaperShadowColor, uPaperColor, shadowFactor);
+          unpaintedCol += vec3(paperGrain * 0.6 + cobblePattern * 0.85);
+
+          // Painted state: rich hand-painted watercolor wash
+          vec3 basePigment = diffuseColor.rgb;
+
+          // Subtle vertical gradient on window panes (vMatType between 0.5 and 1.5)
+          if (vMatType > 0.5 && vMatType < 1.5) {
+            float glassGrad = sin(vWorldPos.y * 1.9 + vWorldPos.x * 0.7) * 0.06;
+            basePigment += vec3(glassGrad * 0.7, glassGrad * 0.85, glassGrad * 1.1);
+          }
+
+          // Watercolor shading: sunlit warm washes vs cool-shifted shadows
+          vec3 shadowedPigment = basePigment * vec3(0.77, 0.79, 0.86);
+          vec3 litPigment = basePigment * 1.03;
+          vec3 paintedCol = mix(shadowedPigment, litPigment, shadowFactor);
+
+          // Apply subtle watercolor mottling & darkened wet pigment border ring
+          paintedCol += vec3(paperGrain * 1.1 + cobblePattern * 1.35);
+          paintedCol *= (1.0 - edgeRing * 0.09);
+
+          gl_FragColor.rgb = mix(unpaintedCol, paintedCol, paintMask);
+          #include <dithering_fragment>
+          `
+        );
+      };
+
+      // Hand-Drawn Architectural Ink Line Material (fades from delicate graphite to dark ink)
+      const inkLineMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+          uPaintVolume: sharedUniforms.uPaintVolume,
+          uWorldMin: sharedUniforms.uWorldMin,
+          uWorldSize: sharedUniforms.uWorldSize,
+          uPaperColor: sharedUniforms.uPaperColor,
+          uPaperShadowColor: sharedUniforms.uPaperShadowColor,
+          uSketchInk: { value: new THREE.Color(0x7c7972) },
+          uPaintedInk: { value: new THREE.Color(0x282c34) },
+          uFogColor: { value: new THREE.Color(PAPER_HEX) },
+          uFogDensity: { value: 0.0145 }
+        },
+        vertexShader: `
+          varying vec3 vWorldPos;
+          varying float vViewDist;
+          void main() {
+            vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+            vWorldPos = worldPosition.xyz;
+            vec4 mvPosition = viewMatrix * worldPosition;
+            vViewDist = -mvPosition.z;
+            // Slight depth offset towards camera to prevent z-fighting on crisp edges
+            mvPosition.z += 0.018;
+            gl_Position = projectionMatrix * mvPosition;
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 uSketchInk;
+          uniform vec3 uPaintedInk;
+          uniform vec3 uFogColor;
+          uniform float uFogDensity;
+          varying vec3 vWorldPos;
+          varying float vViewDist;
+          ${noiseGLSL}
+
+          void main() {
+            float edgeRing = 0.0;
+            float paintMask = sampleWatercolorMask(vWorldPos, edgeRing);
+
+            // Pencil/ink wobble modulation along lines
+            float inkGrain = fbm3D(vWorldPos * 3.8);
+            vec3 inkCol = mix(uSketchInk, uPaintedInk, paintMask);
+            inkCol = mix(inkCol, uSketchInk * 1.18, (1.0 - paintMask) * (1.0 - inkGrain) * 0.35);
+
+            // Exponential squared fog matching scene.fog
+            float fogFactor = 1.0 - exp(- (uFogDensity * vViewDist) * (uFogDensity * vViewDist));
+            fogFactor = clamp(fogFactor, 0.0, 1.0);
+
+            gl_FragColor = vec4(mix(inkCol, uFogColor, fogFactor), 1.0);
+          }
+        `
+      });
+
+      // -------------------------------------------------------------------------
+      // 5. CURATED EUROPEAN WATERCOLOR PALETTES
+      // -------------------------------------------------------------------------
+      const PALETTE = {
+        cobaltBlue:     0x2d68c4,
+        cobaltDark:     0x22519c,
+        emeraldGreen:   0x318754,
+        emeraldDark:    0x246b41,
+        terracottaRed:  0xcf4a40,
+        terracottaDark: 0xa93830,
+        ochreGold:      0xe5b862,
+        ochreLight:     0xedd08e,
+        ochreWarm:      0xdca44c,
+        sandstone:      0xe7c582,
+        coralPeach:     0xdc8768,
+        sageGreen:      0x539972,
+        burgundyPlum:   0x8c3754,
+        slateNavy:      0x39526e,
+        windowBlue:     0x2b78c2,
+        windowBlueLit:  0x3d88ce,
+        shutterBlue:    0x4b7bb4,
+        cafeAmber:      0xe59a45,
+        lanternGlow:    0xf5e589,
+        ironDark:       0x323f4e,
+        awningCream:    0xede3cd,
+        awningStripe:   0xd8ccb4,
+        woodBistro:     0xd59144,
+        cupWhite:       0xf7f5f0,
+        foliageGreen:   0x5ab847,
+        foliageLime:    0xbdd848,
+        flowerPink:     0xe85278,
+        flowerYellow:   0xf4d046,
+        roofTerracotta: 0xc8644c,
+        cobbleWarm:     0xe7e2d6
+      };
+
+      // Street centerline gentle winding curve
+      function getStreetCenterX(z) {
+        return Math.sin(z * 0.048) * 2.35 + Math.cos(z * 0.024) * 1.15;
+      }
+
+      function getStreetTangentAngle(z) {
+        const dx = Math.cos(z * 0.048) * 2.35 * 0.048 - Math.sin(z * 0.024) * 1.15 * 0.024;
+        return Math.atan2(dx, -1.0);
+      }
+
+      // -------------------------------------------------------------------------
+      // 6. GEOMETRY BUILDER HELPERS (Single Merged Mesh + Edges per Chunk)
+      // -------------------------------------------------------------------------
+      class ChunkBuilder {
+        constructor() {
+          this.geometries = [];
+          this.edgeGeometries = [];
+        }
+
+        /**
+         * Adds a 3D geometry primitive with a specific watercolor hex color and material type.
+         * matType: 0 = matte watercolor, 1 = window glass, 2 = warm glow glass, 3 = cobblestone
+         */
+        addPart(geom, hexColor, matrix, matType = 0.0, includeEdges = true, edgeThreshold = 22) {
+          const g = geom.clone();
+          if (matrix) g.applyMatrix4(matrix);
+
+          // Ensure non-indexed for clean vertex colors and sharp flat normals
+          const nonIndexed = g.index ? g.toNonIndexed() : g;
+          nonIndexed.computeVertexNormals();
+
+          const count = nonIndexed.attributes.position.count;
+          const colors = new Float32Array(count * 3);
+          const matTypes = new Float32Array(count);
+          const col = new THREE.Color(hexColor);
+
+          for (let i = 0; i < count; i++) {
+            colors[i * 3]     = col.r;
+            colors[i * 3 + 1] = col.g;
+            colors[i * 3 + 2] = col.b;
+            matTypes[i] = matType;
+          }
+
+          nonIndexed.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+          nonIndexed.setAttribute('aMatType', new THREE.BufferAttribute(matTypes, 1));
+          // Strip UVs if inconsistent so BufferGeometryUtils.mergeBufferGeometries succeeds cleanly
+          if (nonIndexed.attributes.uv) nonIndexed.deleteAttribute('uv');
+
+          this.geometries.push(nonIndexed);
+
+          if (includeEdges) {
+            const edges = new THREE.EdgesGeometry(g, edgeThreshold);
+            this.edgeGeometries.push(edges);
+          }
+        }
+
+        addBox(w, h, d, hexColor, x, y, z, rx = 0, ry = 0, rz = 0, matType = 0.0, includeEdges = true) {
+          const geom = new THREE.BoxGeometry(w, h, d);
+          const m = new THREE.Matrix4();
+          const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ'));
+          m.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(1, 1, 1));
+          this.addPart(geom, hexColor, m, matType, includeEdges);
+        }
+
+        addCylinder(rt, rb, h, segs, hexColor, x, y, z, rx = 0, ry = 0, rz = 0, matType = 0.0, includeEdges = true, edgeThresh = 25) {
+          const geom = new THREE.CylinderGeometry(rt, rb, h, segs);
+          const m = new THREE.Matrix4();
+          const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ'));
+          m.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(1, 1, 1));
+          this.addPart(geom, hexColor, m, matType, includeEdges, edgeThresh);
+        }
+
+        buildGroup() {
+          const group = new THREE.Group();
+
+          if (this.geometries.length > 0) {
+            const mergedMeshGeom = THREE.BufferGeometryUtils.mergeBufferGeometries(this.geometries, false);
+            const mesh = new THREE.Mesh(mergedMeshGeom, streetMaterial);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            group.add(mesh);
+          }
+
+          if (this.edgeGeometries.length > 0) {
+            const mergedEdgeGeom = THREE.BufferGeometryUtils.mergeBufferGeometries(this.edgeGeometries, false);
+            const lines = new THREE.LineSegments(mergedEdgeGeom, inkLineMaterial);
+            group.add(lines);
+          }
+
+          return group;
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // 7. ARCHITECTURAL MODULE CONSTRUCTORS
+      // -------------------------------------------------------------------------
+
+      /**
+       * Adds a detailed mullioned window + frame + optional shutters, balcony, and cascading foliage.
+       */
+      function addFrenchWindow(
+        builder, parentMatrix,
+        w, h, glassHex, frameHex,
+        hasShutters, shutterHex,
+        hasBalcony, hasFoliage,
+        seed
+      ) {
+        const addLocalBox = (bw, bh, bd, col, lx, ly, lz, rx = 0, ry = 0, rz = 0, matType = 0.0) => {
+          const geom = new THREE.BoxGeometry(bw, bh, bd);
+          const localM = new THREE.Matrix4();
+          const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ'));
+          localM.compose(new THREE.Vector3(lx, ly, lz), q, new THREE.Vector3(1, 1, 1));
+          const finalM = new THREE.Matrix4().multiplyMatrices(parentMatrix, localM);
+          builder.addPart(geom, col, finalM, matType, true);
+        };
+
+        // Recessed outer window casing
+        addLocalBox(w + 0.22, h + 0.22, 0.14, frameHex, 0, 0, 0.04, 0, 0, 0, 0.0);
+        // Window glass pane
+        addLocalBox(w, h, 0.06, glassHex, 0, 0, 0.06, 0, 0, 0, 1.0);
+        // Central vertical & horizontal mullions
+        addLocalBox(0.07, h, 0.10, frameHex, 0, 0, 0.09, 0, 0, 0, 0.0);
+        addLocalBox(w, 0.06, 0.10, frameHex, 0, h * 0.12, 0.09, 0, 0, 0, 0.0);
+        addLocalBox(w, 0.06, 0.10, frameHex, 0, -h * 0.22, 0.09, 0, 0, 0, 0.0);
+        // Window sill
+        addLocalBox(w + 0.34, 0.12, 0.26, frameHex, 0, -h * 0.5 - 0.06, 0.11, 0, 0, 0, 0.0);
+
+        // Louvered shutters on left & right
+        if (hasShutters) {
+          const sw = w * 0.42;
+          addLocalBox(sw, h, 0.07, shutterHex, -w * 0.5 - sw * 0.5 - 0.06, 0, 0.09);
+          addLocalBox(sw, h, 0.07, shutterHex,  w * 0.5 + sw * 0.5 + 0.06, 0, 0.09);
+        }
+
+        // Wrought-iron Juliet balcony
+        if (hasBalcony) {
+          const bw = w + 0.65;
+          const bd = 0.42;
+          const bh = 0.78;
+          const by = -h * 0.5 + bh * 0.5;
+          // Balcony base slab
+          addLocalBox(bw + 0.12, 0.12, bd + 0.08, frameHex, 0, -h * 0.5 - 0.04, bd * 0.5);
+          // Top & bottom iron rails
+          addLocalBox(bw, 0.05, 0.05, PALETTE.ironDark, 0, by + bh * 0.5, bd);
+          addLocalBox(bw, 0.05, 0.05, PALETTE.ironDark, 0, by - bh * 0.42, bd);
+          addLocalBox(0.05, 0.05, bd, PALETTE.ironDark, -bw * 0.5, by + bh * 0.5, bd * 0.5);
+          addLocalBox(0.05, 0.05, bd, PALETTE.ironDark,  bw * 0.5, by + bh * 0.5, bd * 0.5);
+          // Vertical iron balusters
+          const bars = 7;
+          for (let b = 0; b <= bars; b++) {
+            const bx = -bw * 0.5 + (b / bars) * bw;
+            addLocalBox(0.035, bh, 0.035, PALETTE.ironDark, bx, by, bd);
+          }
+        }
+
+        // Low-poly cascading foliage & blossoms
+        if (hasFoliage) {
+          const boxW = w + 0.25;
+          addLocalBox(boxW, 0.22, 0.24, PALETTE.coralPeach, 0, -h * 0.5 + 0.08, 0.22);
+          const clumpCount = 6;
+          for (let c = 0; c < clumpCount; c++) {
+            const t = (c / (clumpCount - 1)) - 0.5;
+            const cx = t * boxW * 0.92;
+            const cy = -h * 0.5 + 0.22 + Math.sin(c * 2.1 + seed) * 0.08;
+            const cz = 0.28 + Math.cos(c * 1.7) * 0.06;
+            const leafCol = (c % 2 === 0) ? PALETTE.foliageGreen : PALETTE.foliageLime;
+            const dodec = new THREE.DodecahedronGeometry(0.19 + (c % 2) * 0.05, 0);
+            const localM = new THREE.Matrix4().makeTranslation(cx, cy, cz);
+            builder.addPart(dodec, leafCol, new THREE.Matrix4().multiplyMatrices(parentMatrix, localM), 0.0, true, 15);
+
+            // Hang trailing vine leaves below
+            if (c % 2 === 1) {
+              const dropDodec = new THREE.DodecahedronGeometry(0.14, 0);
+              const dropM = new THREE.Matrix4().makeTranslation(cx + 0.04, cy - 0.24, cz + 0.04);
+              builder.addPart(dropDodec, PALETTE.foliageLime, new THREE.Matrix4().multiplyMatrices(parentMatrix, dropM), 0.0, true, 15);
+            }
+
+            // Occasional pink or yellow flower blossom
+            if (posMod(c + Math.floor(seed), 3) === 0) {
+              const flCol = (posMod(Math.floor(seed), 2) === 0) ? PALETTE.flowerPink : PALETTE.flowerYellow;
+              const flGeom = new THREE.DodecahedronGeometry(0.11, 0);
+              const flM = new THREE.Matrix4().makeTranslation(cx, cy + 0.12, cz + 0.10);
+              builder.addPart(flGeom, flCol, new THREE.Matrix4().multiplyMatrices(parentMatrix, flM), 0.0, true, 15);
+            }
+          }
+        }
+      }
+
+      /**
+       * Signature Octagonal Corner Bay-Window Cafe Building (seen at 00:00, 00:52, and 01:09).
+       * Supports Cobalt Blue, Emerald Green, and Terracotta Red ground-floor cafe variants.
+       */
+      function addCornerTurretCafe(builder, x, z, rotationY, groundColor, upperColor, includeBistroSet = true) {
+        const rootM = new THREE.Matrix4();
+        rootM.compose(
+          new THREE.Vector3(x, 0, z),
+          new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rotationY),
+          new THREE.Vector3(1, 1, 1)
+        );
+
+        const addTurretBox = (bw, bh, bd, col, lx, ly, lz, ry = 0, matType = 0.0) => {
+          const geom = new THREE.BoxGeometry(bw, bh, bd);
+          const localM = new THREE.Matrix4();
+          localM.compose(
+            new THREE.Vector3(lx, ly, lz),
+            new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ry),
+            new THREE.Vector3(1, 1, 1)
+          );
+          builder.addPart(geom, col, new THREE.Matrix4().multiplyMatrices(rootM, localM), matType, true);
+        };
+
+        // Main backing building mass
+        addTurretBox(5.2, 4.2, 5.2, groundColor, -1.2, 2.1, -1.2);
+        addTurretBox(5.2, 7.6, 5.2, upperColor,  -1.2, 8.0, -1.2);
+
+        // 3-sided Chamfered Bay Turret (angles: -42 deg, 0 deg, +42 deg)
+        const bayAngles = [-0.74, 0.0, 0.74];
+        const bayRadius = 2.05;
+        const panelW = 1.68;
+
+        bayAngles.forEach((ang, idx) => {
+          const px = Math.sin(ang) * bayRadius;
+          const pz = Math.cos(ang) * bayRadius;
+
+          const faceM = new THREE.Matrix4();
+          faceM.compose(
+            new THREE.Vector3(px, 0, pz),
+            new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ang),
+            new THREE.Vector3(1, 1, 1)
+          );
+          const combinedFaceM = new THREE.Matrix4().multiplyMatrices(rootM, faceM);
+
+          const addFaceBox = (bw, bh, bd, col, fx, fy, fz, matType = 0.0) => {
+            const g = new THREE.BoxGeometry(bw, bh, bd);
+            const m = new THREE.Matrix4().makeTranslation(fx, fy, fz);
+            builder.addPart(g, col, new THREE.Matrix4().multiplyMatrices(combinedFaceM, m), matType, true);
+          };
+
+          // Ground Floor Cafe Bay Panel (0m to 4.2m)
+          addFaceBox(panelW, 4.2, 0.35, groundColor, 0, 2.1, -0.15);
+          // Decorative wainscot kickplate panel at bottom
+          addFaceBox(panelW - 0.28, 0.85, 0.08, groundColor, 0, 0.58, 0.06);
+          // Side fluted pilasters
+          addFaceBox(0.18, 4.2, 0.14, groundColor, -panelW * 0.46, 2.1, 0.06);
+          addFaceBox(0.18, 4.2, 0.14, groundColor,  panelW * 0.46, 2.1, 0.06);
+          // Warm glowing amber cafe windows (2x2 mullions)
+          addFaceBox(panelW - 0.42, 2.35, 0.06, PALETTE.cafeAmber, 0, 2.45, 0.05, 2.0);
+          addFaceBox(0.06, 2.35, 0.10, groundColor, 0, 2.45, 0.07);
+          addFaceBox(panelW - 0.42, 0.06, 0.10, groundColor, 0, 2.45, 0.07);
+          // Cornice above ground floor
+          addFaceBox(panelW + 0.22, 0.26, 0.32, groundColor, 0, 4.18, 0.10);
+
+          // Wall-mounted iron coach lanterns on ground floor pilasters
+          if (idx === 0 || idx === 1) {
+            const lanternX = (idx === 0) ? panelW * 0.45 : -panelW * 0.45;
+            addFaceBox(0.18, 0.32, 0.18, PALETTE.ironDark, lanternX, 2.95, 0.24);
+            addFaceBox(0.24, 0.08, 0.24, PALETTE.ironDark, lanternX, 3.13, 0.24);
+          }
+
+          // Second Floor Sandstone/Ochre Bay (4.2m to 8.0m)
+          addFaceBox(panelW, 3.8, 0.35, upperColor, 0, 6.1, -0.15);
+          addFaceBox(0.16, 3.8, 0.12, upperColor, -panelW * 0.46, 6.1, 0.05);
+          addFaceBox(0.16, 3.8, 0.12, upperColor,  panelW * 0.46, 6.1, 0.05);
+          addFaceBox(panelW + 0.20, 0.22, 0.28, upperColor, 0, 7.95, 0.08);
+
+          // 2nd Floor French window + wraparound iron balcony + lush green/lime foliage
+          const winM2 = new THREE.Matrix4().multiplyMatrices(
+            combinedFaceM,
+            new THREE.Matrix4().makeTranslation(0, 6.05, 0.02)
+          );
+          addFrenchWindow(
+            builder, winM2,
+            0.96, 2.35, PALETTE.windowBlue, upperColor,
+            idx !== 1, PALETTE.shutterBlue,
+            true, true, idx * 3.7 + 1.0
+          );
+
+          // Third Floor Sandstone/Ochre Bay (8.0m to 11.6m)
+          addFaceBox(panelW, 3.6, 0.35, upperColor, 0, 9.8, -0.15);
+          addFaceBox(panelW + 0.24, 0.28, 0.34, upperColor, 0, 11.55, 0.10);
+
+          const winM3 = new THREE.Matrix4().multiplyMatrices(
+            combinedFaceM,
+            new THREE.Matrix4().makeTranslation(0, 9.75, 0.02)
+          );
+          addFrenchWindow(
+            builder, winM3,
+            0.96, 2.15, PALETTE.windowBlue, upperColor,
+            true, PALETTE.shutterBlue,
+            false, false, idx * 5.1
+          );
+        });
+
+        // Sidewalk Bistro Set & Topiary Tree (seen at 00:00 - 00:04)
+        if (includeBistroSet) {
+          const tx = -0.25;
+          const tz = 3.25;
+          // Bistro round wooden tabletop
+          const topGeom = new THREE.CylinderGeometry(0.56, 0.56, 0.06, 14);
+          const topM = new THREE.Matrix4().makeTranslation(tx, 0.78, tz);
+          builder.addPart(topGeom, PALETTE.woodBistro, new THREE.Matrix4().multiplyMatrices(rootM, topM), 0.0, true);
+          // Central pedestal & tripod base
+          addTurretBox(0.07, 0.76, 0.07, PALETTE.ironDark, tx, 0.38, tz);
+          addTurretBox(0.55, 0.05, 0.08, PALETTE.ironDark, tx, 0.03, tz, 0.4);
+          addTurretBox(0.55, 0.05, 0.08, PALETTE.ironDark, tx, 0.03, tz, -0.9);
+
+          // Tiny white espresso cup & saucer on table
+          const saucerG = new THREE.CylinderGeometry(0.10, 0.08, 0.02, 10);
+          const cupG = new THREE.CylinderGeometry(0.06, 0.05, 0.09, 10);
+          builder.addPart(saucerG, PALETTE.cupWhite, new THREE.Matrix4().multiplyMatrices(rootM, new THREE.Matrix4().makeTranslation(tx - 0.06, 0.82, tz + 0.05)), 0.0, true);
+          builder.addPart(cupG, PALETTE.cupWhite, new THREE.Matrix4().multiplyMatrices(rootM, new THREE.Matrix4().makeTranslation(tx - 0.06, 0.87, tz + 0.05)), 0.0, true);
+
+          // Two folding wooden bistro chairs flanking the table
+          [-0.78, 0.78].forEach((chairOffset, cIdx) => {
+            const cx = tx + chairOffset;
+            const cz = tz + (cIdx === 0 ? 0.12 : -0.05);
+            const chairAng = cIdx === 0 ? 0.45 : -0.45;
+            const chairM = new THREE.Matrix4();
+            chairM.compose(
+              new THREE.Vector3(cx, 0, cz),
+              new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), chairAng),
+              new THREE.Vector3(1, 1, 1)
+            );
+            const fullChairM = new THREE.Matrix4().multiplyMatrices(rootM, chairM);
+            const addChairPart = (bw, bh, bd, lx, ly, lz, rx = 0, rz = 0) => {
+              const g = new THREE.BoxGeometry(bw, bh, bd);
+              const lm = new THREE.Matrix4();
+              lm.compose(
+                new THREE.Vector3(lx, ly, lz),
+                new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, 0, rz)),
+                new THREE.Vector3(1, 1, 1)
+              );
+              builder.addPart(g, PALETTE.woodBistro, new THREE.Matrix4().multiplyMatrices(fullChairM, lm), 0.0, true);
+            };
+            // Seat slats
+            addChairPart(0.42, 0.04, 0.38, 0, 0.46, 0);
+            // Crossed folding legs
+            addChairPart(0.04, 0.56, 0.04, -0.18, 0.24, 0, 0.38, 0);
+            addChairPart(0.04, 0.56, 0.04,  0.18, 0.24, 0, 0.38, 0);
+            addChairPart(0.04, 0.92, 0.04, -0.18, 0.44, -0.04, -0.26, 0);
+            addChairPart(0.04, 0.92, 0.04,  0.18, 0.44, -0.04, -0.26, 0);
+            // Backrest slats
+            addChairPart(0.44, 0.12, 0.03, 0, 0.82, -0.16, -0.15, 0);
+            addChairPart(0.44, 0.08, 0.03, 0, 0.66, -0.12, -0.15, 0);
+          });
+
+          // Sculpted spiral topiary tree in pot (left of the table)
+          const potX = -1.65;
+          const potZ = 2.65;
+          const potG = new THREE.CylinderGeometry(0.32, 0.24, 0.52, 10);
+          builder.addPart(potG, PALETTE.foliageGreen, new THREE.Matrix4().multiplyMatrices(rootM, new THREE.Matrix4().makeTranslation(potX, 0.26, potZ)), 0.0, true);
+          addTurretBox(0.08, 1.65, 0.08, PALETTE.woodBistro, potX, 1.1, potZ);
+          const tiers = [
+            { y: 0.85, r: 0.38, xOff: -0.06 },
+            { y: 1.28, r: 0.32, xOff:  0.08 },
+            { y: 1.68, r: 0.27, xOff: -0.05 },
+            { y: 2.02, r: 0.21, xOff:  0.03 }
+          ];
+          tiers.forEach((t) => {
+            const bushG = new THREE.DodecahedronGeometry(t.r, 0);
+            const bm = new THREE.Matrix4().makeTranslation(potX + t.xOff, t.y, potZ);
+            builder.addPart(bushG, PALETTE.foliageGreen, new THREE.Matrix4().multiplyMatrices(rootM, bm), 0.0, true, 15);
+          });
+        }
+      }
+
+      /**
+       * Classic European Street Lamppost (slate charcoal iron post + warm lantern glass).
+       */
+      function addStreetLamppost(builder, x, z) {
+        // Octagonal fluted base & tapered post
+        builder.addCylinder(0.24, 0.32, 0.45, 8, PALETTE.ironDark, x, 0.22, z);
+        builder.addCylinder(0.16, 0.23, 0.75, 8, PALETTE.ironDark, x, 0.82, z);
+        builder.addCylinder(0.07, 0.13, 2.35, 8, PALETTE.ironDark, x, 2.35, z);
+        builder.addBox(0.32, 0.08, 0.32, PALETTE.ironDark, x, 3.55, z);
+
+        // 4-sided tapered lantern housing with warm glowing yellow glass
+        builder.addCylinder(0.26, 0.16, 0.56, 4, PALETTE.lanternGlow, x, 3.86, z, 0, Math.PI * 0.25, 0, 2.0, true, 10);
+        // Corner frame struts of lantern
+        for (let a = 0; a < 4; a++) {
+          const ang = a * Math.PI * 0.5 + Math.PI * 0.25;
+          const sx = x + Math.cos(ang) * 0.19;
+          const sz = z + Math.sin(ang) * 0.19;
+          builder.addBox(0.035, 0.58, 0.035, PALETTE.ironDark, sx, 3.86, sz, 0, 0, 0);
+        }
+        // Pyramid lantern cap & finial
+        builder.addCylinder(0.03, 0.30, 0.26, 4, PALETTE.ironDark, x, 4.26, z, 0, Math.PI * 0.25, 0, 0.0, true, 10);
+        builder.addBox(0.06, 0.14, 0.06, PALETTE.ironDark, x, 4.44, z);
+      }
+
+      /**
+       * Townhouse Facade with storefront mullions, canvas awning, upper French windows & balconies.
+       */
+      function addTownhouseFacade(
+        builder, x, z, rotationY, width, stories,
+        groundHex, upperHex, glassHex,
+        hasAwning, seed
+      ) {
+        const rootM = new THREE.Matrix4();
+        rootM.compose(
+          new THREE.Vector3(x, 0, z),
+          new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rotationY),
+          new THREE.Vector3(1, 1, 1)
+        );
+
+        const addLocalBox = (bw, bh, bd, col, lx, ly, lz, rx = 0, ry = 0, rz = 0, matType = 0.0) => {
+          const geom = new THREE.BoxGeometry(bw, bh, bd);
+          const lm = new THREE.Matrix4();
+          lm.compose(
+            new THREE.Vector3(lx, ly, lz),
+            new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ')),
+            new THREE.Vector3(1, 1, 1)
+          );
+          builder.addPart(geom, col, new THREE.Matrix4().multiplyMatrices(rootM, lm), matType, true);
+        };
+
+        const depth = 3.8;
+        const groundH = 4.0;
+        const storyH = 3.45;
+        const totalUpperH = stories * storyH;
+
+        // Ground floor block
+        addLocalBox(width, groundH, depth, groundHex, 0, groundH * 0.5, -depth * 0.5);
+        // Cornice molding above storefront
+        addLocalBox(width + 0.16, 0.28, 0.34, groundHex, 0, groundH - 0.08, 0.12);
+        // Signboard frieze band
+        addLocalBox(width - 0.5, 0.52, 0.12, PALETTE.awningCream, 0, groundH - 0.52, 0.05);
+
+        // Storefront large mullioned display windows
+        const bays = width > 6.2 ? 3 : 2;
+        const bayW = (width - 0.8) / bays;
+        for (let b = 0; b < bays; b++) {
+          const bx = -((bays - 1) * 0.5 - b) * bayW;
+          // Pilaster divider
+          addLocalBox(0.18, groundH - 0.3, 0.16, groundHex, bx - bayW * 0.5, (groundH - 0.3) * 0.5, 0.06);
+          // Lower wood panel
+          addLocalBox(bayW - 0.26, 0.72, 0.08, groundHex, bx, 0.42, 0.05);
+          // Storefront glass pane
+          const winH = 2.15;
+          const winY = 1.98;
+          addLocalBox(bayW - 0.28, winH, 0.06, glassHex, bx, winY, 0.04, 0, 0, 0, 1.0);
+          // Red or matching wooden window mullions
+          const mullionHex = (groundHex === PALETTE.terracottaRed || groundHex === PALETTE.cobaltBlue)
+            ? groundHex
+            : PALETTE.terracottaRed;
+          addLocalBox(0.06, winH, 0.10, mullionHex, bx, winY, 0.07);
+          addLocalBox(bayW - 0.28, 0.06, 0.10, mullionHex, bx, winY + 0.2, 0.07);
+        }
+        // Final right pilaster
+        addLocalBox(0.18, groundH - 0.3, 0.16, groundHex, (width - 0.8) * 0.5, (groundH - 0.3) * 0.5, 0.06);
+
+        // Angled cream canvas awning with blue metal tie-rods (seen at 00:18 - 00:35)
+        if (hasAwning) {
+          const awW = width - 0.45;
+          const awLen = 1.65;
+          addLocalBox(awW, 0.08, awLen, PALETTE.awningCream, 0, 3.22, awLen * 0.46, 0.38, 0, 0);
+          // Front valance flap
+          addLocalBox(awW, 0.22, 0.06, PALETTE.awningCream, 0, 2.86, awLen * 0.88, 0, 0, 0);
+          // Blue iron support struts
+          addLocalBox(0.04, 0.04, awLen * 0.92, PALETTE.cobaltBlue, -awW * 0.48, 2.75, awLen * 0.45, 0.05, 0, 0);
+          addLocalBox(0.04, 0.04, awLen * 0.92, PALETTE.cobaltBlue,  awW * 0.48, 2.75, awLen * 0.45, 0.05, 0, 0);
+        }
+
+        // Upper stories block
+        addLocalBox(width, totalUpperH, depth, upperHex, 0, groundH + totalUpperH * 0.5, -depth * 0.5);
+
+        for (let s = 0; s < stories; s++) {
+          const sy = groundH + s * storyH + storyH * 0.5;
+          // Story stringcourse ledge
+          addLocalBox(width + 0.14, 0.18, 0.24, upperHex, 0, groundH + (s + 1) * storyH - 0.06, 0.08);
+
+          for (let b = 0; b < bays; b++) {
+            const bx = -((bays - 1) * 0.5 - b) * bayW;
+            const winM = new THREE.Matrix4().multiplyMatrices(
+              rootM,
+              new THREE.Matrix4().makeTranslation(bx, sy, 0.02)
+            );
+            const hasBalc = (s === 0) || (posMod(b + s + Math.floor(seed), 2) === 0);
+            const hasFol = (s <= 1) && ((b + s) % 2 === 0);
+            addFrenchWindow(
+              builder, winM,
+              1.05, 2.15, PALETTE.windowBlue, upperHex,
+              (s + b) % 3 === 0, PALETTE.shutterBlue,
+              hasBalc, hasFol, seed + s * 3.1 + b
+            );
+          }
+        }
+
+        // Pitched terracotta roof & chimney
+        const roofY = groundH + totalUpperH;
+        addLocalBox(width - 0.1, 1.35, depth * 0.7, PALETTE.roofTerracotta, 0, roofY + 0.5, -depth * 0.45, 0.35, 0, 0);
+        if (posMod(Math.floor(seed), 2) === 0) {
+          addLocalBox(0.55, 1.4, 0.55, upperHex, width * 0.25, roofY + 1.1, -1.2);
+          addLocalBox(0.65, 0.16, 0.65, PALETTE.roofTerracotta, width * 0.25, roofY + 1.82, -1.2);
+        }
+      }
+
+      /**
+       * Overhead Stone Skybridge or Green Vine Iron Trellis spanning across the street.
+       */
+      function addSkybridge(builder, xLeft, xRight, z, isTrellisBridge = false) {
+        const span = Math.abs(xRight - xLeft) + 0.8;
+        const cx = (xLeft + xRight) * 0.5;
+        const bridgeY = 7.65;
+
+        if (!isTrellisBridge) {
+          // Ochre Stone Skybridge with Blue Iron Railing & Hanging Lantern (seen at 00:16 & 00:44)
+          builder.addBox(span, 0.95, 1.85, PALETTE.ochreGold, cx, bridgeY, z);
+          builder.addBox(span, 0.18, 2.08, PALETTE.ochreLight, cx, bridgeY + 0.52, z);
+          builder.addBox(span, 0.16, 2.04, PALETTE.ochreLight, cx, bridgeY - 0.50, z);
+          // Corbel arches on both sides
+          builder.addBox(0.95, 0.85, 1.65, PALETTE.ochreGold, xLeft + 0.4, bridgeY - 0.75, z, 0, 0, 0.45);
+          builder.addBox(0.95, 0.85, 1.65, PALETTE.ochreGold, xRight - 0.4, bridgeY - 0.75, z, 0, 0, -0.45);
+
+          // Top iron railing
+          const railY = bridgeY + 1.05;
+          builder.addBox(span, 0.06, 0.06, PALETTE.cobaltBlue, cx, railY + 0.42, z + 0.85);
+          builder.addBox(span, 0.06, 0.06, PALETTE.cobaltBlue, cx, railY - 0.35, z + 0.85);
+          const posts = 12;
+          for (let i = 0; i <= posts; i++) {
+            const px = cx - span * 0.46 + (i / posts) * span * 0.92;
+            builder.addBox(0.05, 0.85, 0.05, PALETTE.cobaltBlue, px, railY, z + 0.85);
+            if (i % 3 === 1) {
+              builder.addBox(0.22, 0.22, 0.06, PALETTE.cobaltBlue, px, railY, z + 0.85);
+            }
+          }
+
+          // Suspended blue iron lantern underneath bridge center
+          builder.addBox(0.04, 0.75, 0.04, PALETTE.ironDark, cx, bridgeY - 0.92, z);
+          builder.addCylinder(0.22, 0.15, 0.42, 6, PALETTE.cobaltBlue, cx, bridgeY - 1.45, z);
+        } else {
+          // Ornate Iron & Blooming Vine Trellis Bridge (seen at 00:53 - 00:59)
+          builder.addBox(span, 0.08, 0.08, PALETTE.ironDark, cx, bridgeY + 0.55, z + 0.4);
+          builder.addBox(span, 0.08, 0.08, PALETTE.ironDark, cx, bridgeY - 0.35, z + 0.4);
+          builder.addBox(span, 0.08, 0.08, PALETTE.ironDark, cx, bridgeY + 0.55, z - 0.4);
+          builder.addBox(span, 0.08, 0.08, PALETTE.ironDark, cx, bridgeY - 0.35, z - 0.4);
+
+          const segments = 10;
+          for (let i = 0; i <= segments; i++) {
+            const px = cx - span * 0.45 + (i / segments) * span * 0.9;
+            builder.addBox(0.05, 0.92, 0.05, PALETTE.ironDark, px, bridgeY + 0.1, z + 0.4);
+            builder.addBox(0.05, 0.92, 0.05, PALETTE.ironDark, px, bridgeY + 0.1, z - 0.4);
+            // Cascading foliage & pink/yellow blossoms along the trellis
+            const leafG = new THREE.DodecahedronGeometry(0.24, 0);
+            const leafCol = (i % 2 === 0) ? PALETTE.foliageGreen : PALETTE.foliageLime;
+            builder.addPart(leafG, leafCol, new THREE.Matrix4().makeTranslation(px, bridgeY - 0.28, z + 0.42), 0.0, true, 15);
+            if (i % 2 === 1) {
+              const flG = new THREE.DodecahedronGeometry(0.14, 0);
+              builder.addPart(flG, PALETTE.flowerPink, new THREE.Matrix4().makeTranslation(px + 0.08, bridgeY - 0.52, z + 0.42), 0.0, true, 15);
+            }
+          }
+        }
+      }
+
+      /**
+       * Overhead Catenary Wire with Suspended Street Lantern (seen throughout the alley).
+       */
+      function addCatenaryWireLamp(builder, xLeft, xRight, z, yBase = 8.8) {
+        const segments = 8;
+        const sag = 0.68;
+        for (let i = 0; i < segments; i++) {
+          const t0 = i / segments;
+          const t1 = (i + 1) / segments;
+          const x0 = THREE.MathUtils.lerp(xLeft, xRight, t0);
+          const x1 = THREE.MathUtils.lerp(xLeft, xRight, t1);
+          const y0 = yBase - Math.sin(t0 * Math.PI) * sag;
+          const y1 = yBase - Math.sin(t1 * Math.PI) * sag;
+
+          const mx = (x0 + x1) * 0.5;
+          const my = (y0 + y1) * 0.5;
+          const len = Math.hypot(x1 - x0, y1 - y0);
+          const ang = Math.atan2(y1 - y0, x1 - x0);
+          builder.addBox(len, 0.03, 0.03, PALETTE.ironDark, mx, my, z, 0, 0, ang);
+        }
+
+        // Central hanging lantern
+        const cx = (xLeft + xRight) * 0.5;
+        const cy = yBase - sag;
+        builder.addBox(0.03, 0.32, 0.03, PALETTE.ironDark, cx, cy - 0.16, z);
+        builder.addCylinder(0.18, 0.12, 0.28, 6, PALETTE.ironDark, cx, cy - 0.38, z);
+      }
+
+      /**
+       * Side Courtyard & Tiered Stone Fountain (seen in frames 00:18 - 00:47).
+       */
+      function addSideCourtyard(builder, sideSign, centerX, zCenter, seed) {
+        // sideSign: +1 = opens on Right, -1 = opens on Left
+        const courtW = 10.5;
+        const courtDepth = 9.5;
+        const openX = centerX + sideSign * 4.4;
+        const backX = openX + sideSign * courtDepth;
+        const midX = (openX + backX) * 0.5;
+
+        // Courtyard cobblestone floor extension
+        builder.addBox(courtDepth + 2.0, 0.3, courtW + 2.0, PALETTE.cobbleWarm, midX, -0.15, zCenter, 0, 0, 0, 3.0, false);
+
+        // North & South flanking courtyard buildings with canvas awnings
+        addTownhouseFacade(
+          builder, midX, zCenter - courtW * 0.5, 0,
+          courtDepth, 2,
+          PALETTE.terracottaRed, PALETTE.ochreGold, PALETTE.windowBlue,
+          true, seed + 1.1
+        );
+        addTownhouseFacade(
+          builder, midX, zCenter + courtW * 0.5, Math.PI,
+          courtDepth, 2,
+          PALETTE.sageGreen, PALETTE.sandstone, PALETTE.windowBlue,
+          true, seed + 2.2
+        );
+
+        // Back focal courtyard building (ochre/coral with awning & pitched gable)
+        const backRotY = sideSign > 0 ? -Math.PI * 0.5 : Math.PI * 0.5;
+        addTownhouseFacade(
+          builder, backX, zCenter, backRotY,
+          courtW, 2,
+          PALETTE.ochreWarm, PALETTE.coralPeach, PALETTE.windowBlue,
+          true, seed + 3.3
+        );
+
+        // Tiered Octagonal Stone Fountain in the courtyard alcove (frames 00:39 - 00:47)
+        const fx = openX + sideSign * 3.2;
+        const fz = zCenter - 1.8;
+        builder.addCylinder(1.25, 1.35, 0.25, 8, PALETTE.ochreGold, fx, 0.12, fz);
+        builder.addCylinder(0.95, 1.05, 0.55, 8, PALETTE.ochreLight, fx, 0.52, fz);
+        builder.addCylinder(0.28, 0.36, 1.15, 8, PALETTE.ochreGold, fx, 1.35, fz);
+        builder.addCylinder(0.62, 0.35, 0.28, 8, PALETTE.ochreLight, fx, 1.95, fz);
+        builder.addCylinder(0.14, 0.20, 0.72, 8, PALETTE.ochreGold, fx, 2.42, fz);
+
+        // Courtyard lamppost
+        addStreetLamppost(builder, openX + sideSign * 1.4, zCenter + 2.2);
+      }
+
+      // -------------------------------------------------------------------------
+      // 8. ENDLESS MODULAR STREET CHUNK MANAGER
+      // -------------------------------------------------------------------------
+      const CHUNK_LENGTH = 36.0;
+      const activeChunks = new Map();
+
+      function posMod(n, m) {
+        return ((n % m) + m) % m;
+      }
+
+      const TURRET_THEMES = [
+        { ground: PALETTE.cobaltBlue,    upper: PALETTE.ochreGold },
+        { ground: PALETTE.emeraldGreen,  upper: PALETTE.sandstone },
+        { ground: PALETTE.terracottaRed, upper: PALETTE.ochreLight }
+      ];
+
+      const SHOP_PALETTES = [
+        { ground: PALETTE.ochreGold,     upper: PALETTE.sandstone,  glass: PALETTE.windowBlue },
+        { ground: PALETTE.terracottaRed, upper: PALETTE.ochreLight, glass: PALETTE.windowBlue },
+        { ground: PALETTE.sageGreen,     upper: PALETTE.ochreGold,  glass: PALETTE.windowBlue },
+        { ground: PALETTE.cobaltBlue,    upper: PALETTE.coralPeach, glass: PALETTE.cafeAmber  },
+        { ground: PALETTE.burgundyPlum,  upper: PALETTE.sandstone,  glass: PALETTE.windowBlue },
+        { ground: PALETTE.slateNavy,     upper: PALETTE.coralPeach, glass: PALETTE.windowBlue }
+      ];
+
+      function generateStreetChunk(chunkIndex) {
+        const builder = new ChunkBuilder();
+        const zStart = -chunkIndex * CHUNK_LENGTH;
+        const themeIdx = posMod(chunkIndex, TURRET_THEMES.length);
+        const turretTheme = TURRET_THEMES[themeIdx];
+
+        // 1. Cobblestone Street Floor & Raised Sidewalk Curbs along the winding spine
+        const floorSteps = 6;
+        const stepLen = CHUNK_LENGTH / floorSteps;
+        for (let i = 0; i < floorSteps; i++) {
+          const zMid = zStart - (i + 0.5) * stepLen;
+          const cx = getStreetCenterX(zMid);
+          const ang = getStreetTangentAngle(zMid);
+
+          // Main herringbone street floor
+          builder.addBox(12.5, 0.3, stepLen + 0.6, PALETTE.cobbleWarm, cx, -0.15, zMid, 0, ang, 0, 3.0, false);
+          // Raised stone sidewalk curbs on left and right
+          builder.addBox(2.2, 0.16, stepLen + 0.3, PALETTE.cobbleWarm, cx - 4.1, 0.08, zMid, 0, ang, 0, 0.0, true);
+          builder.addBox(2.2, 0.16, stepLen + 0.3, PALETTE.cobbleWarm, cx + 4.1, 0.08, zMid, 0, ang, 0, 0.0, true);
+        }
+
+        // 2. Signature Corner Bay-Window Cafe Turret at the front of the chunk
+        const zTurret = zStart - 4.5;
+        const cxTurret = getStreetCenterX(zTurret);
+        const turretOnLeft = (posMod(chunkIndex, 2) === 0);
+        const turretX = cxTurret + (turretOnLeft ? -4.35 : 4.35);
+        const turretRot = turretOnLeft ? 0.58 : -0.58;
+
+        addCornerTurretCafe(
+          builder,
+          turretX,
+          zTurret,
+          turretRot,
+          turretTheme.ground,
+          turretTheme.upper,
+          chunkIndex === 0 || posMod(chunkIndex, 2) === 0
+        );
+
+        // Lamppost right beside the corner cafe (exact match to 00:00)
+        addStreetLamppost(builder, cxTurret + (turretOnLeft ? -1.05 : 1.05), zTurret + 1.15);
+
+        // Opposite building across from the corner turret
+        const oppPalette = SHOP_PALETTES[posMod(chunkIndex * 2, SHOP_PALETTES.length)];
+        const oppX = cxTurret + (turretOnLeft ? 4.45 : -4.45);
+        const oppRot = turretOnLeft ? -Math.PI * 0.5 + getStreetTangentAngle(zTurret) : Math.PI * 0.5 + getStreetTangentAngle(zTurret);
+        addTownhouseFacade(
+          builder, oppX, zTurret, oppRot,
+          9.0, 2,
+          oppPalette.ground, oppPalette.upper, oppPalette.glass,
+          true, chunkIndex * 7.1
+        );
+
+        // 3. Mid-chunk Narrow Alley Townhouses & Overhead Skybridge / Trellis
+        const zMid = zStart - 15.0;
+        const cxMid = getStreetCenterX(zMid);
+        const angMid = getStreetTangentAngle(zMid);
+
+        const leftPal1 = SHOP_PALETTES[posMod(chunkIndex * 3 + 1, SHOP_PALETTES.length)];
+        const rightPal1 = SHOP_PALETTES[posMod(chunkIndex * 3 + 2, SHOP_PALETTES.length)];
+
+        addTownhouseFacade(
+          builder, cxMid - 4.45, zMid, Math.PI * 0.5 + angMid,
+          9.5, 2,
+          leftPal1.ground, leftPal1.upper, leftPal1.glass,
+          posMod(chunkIndex, 2) === 1, chunkIndex * 11.3
+        );
+
+        addTownhouseFacade(
+          builder, cxMid + 4.45, zMid, -Math.PI * 0.5 + angMid,
+          9.5, 2,
+          rightPal1.ground, rightPal1.upper, rightPal1.glass,
+          true, chunkIndex * 13.7
+        );
+
+        // Alternating Lampposts along the alley
+        addStreetLamppost(builder, cxMid - 2.65, zMid - 2.2);
+        addStreetLamppost(builder, cxMid + 2.65, zMid + 1.8);
+
+        // Overhead Catenary Wire Lanterns
+        addCatenaryWireLamp(builder, cxTurret - 4.2, cxTurret + 4.2, zTurret - 4.8, 9.2);
+        addCatenaryWireLamp(builder, cxMid - 4.2, cxMid + 4.2, zMid - 4.2, 9.0);
+
+        // Overhead Skybridge or Vine Trellis Bridge
+        addSkybridge(builder, cxMid - 4.2, cxMid + 4.2, zMid - 1.5, posMod(chunkIndex, 2) === 1);
+
+        // 4. Deep-chunk Recessed Side Courtyard + Gable Focal Facade (frames 00:18 - 00:47)
+        const zCourt = zStart - 27.5;
+        const cxCourt = getStreetCenterX(zCourt);
+        const angCourt = getStreetTangentAngle(zCourt);
+        const courtSide = (posMod(chunkIndex, 2) === 0) ? 1 : -1;
+
+        addSideCourtyard(builder, courtSide, cxCourt, zCourt, chunkIndex * 19.1);
+
+        // Townhouse opposite the courtyard opening
+        const oppCourtPal = SHOP_PALETTES[posMod(chunkIndex * 5 + 4, SHOP_PALETTES.length)];
+        const oppCourtX = cxCourt - courtSide * 4.45;
+        const oppCourtRot = courtSide > 0 ? Math.PI * 0.5 + angCourt : -Math.PI * 0.5 + angCourt;
+        addTownhouseFacade(
+          builder, oppCourtX, zCourt, oppCourtRot,
+          11.2, 2,
+          oppCourtPal.ground, oppCourtPal.upper, oppCourtPal.glass,
+          false, chunkIndex * 23.4
+        );
+
+        const chunkGroup = builder.buildGroup();
+        scene.add(chunkGroup);
+        return chunkGroup;
+      }
+
+      function updateVisibleChunks(playerZ) {
+        const currentChunkIdx = Math.floor(-playerZ / CHUNK_LENGTH);
+        const minChunk = currentChunkIdx - 1;
+        const maxChunk = currentChunkIdx + 3;
+
+        for (let idx = minChunk; idx <= maxChunk; idx++) {
+          if (!activeChunks.has(idx)) {
+            activeChunks.set(idx, generateStreetChunk(idx));
+          }
+        }
+
+        for (const [idx, group] of activeChunks.entries()) {
+          if (idx < minChunk - 1 || idx > maxChunk + 1) {
+            scene.remove(group);
+            group.traverse((child) => {
+              if (child.geometry) child.geometry.dispose();
+            });
+            activeChunks.delete(idx);
+          }
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // 9. INITIAL SCENE SETUP & STARTING WATERCOLOR SPLASH (Frame 00:00)
+      // -------------------------------------------------------------------------
+      const player = {
+        position: new THREE.Vector3(getStreetCenterX(3.2) - 0.55, 2.35, 3.2),
+        yaw: -0.06,
+        pitch: 0.03,
+        targetYaw: -0.06,
+        targetPitch: 0.03,
+        speed: 6.8
+      };
+
+      camera.position.copy(player.position);
+      updateVisibleChunks(player.position.z);
+
+      /**
+       * Paints the signature initial watercolor splash on the corner cobalt-blue cafe,
+       * bistro table, lamppost, and right-hand ochre window so frame 00:00 matches the video.
+       */
+      function seedInitialCafeSplash() {
+        const zTurret = -4.5;
+        const cx = getStreetCenterX(zTurret);
+        // Cobalt blue corner turret & upper ochre balcony
+        paintSphereInVolume(cx - 2.6, 2.5, zTurret + 1.8, 3.6, 1.0);
+        paintSphereInVolume(cx - 2.4, 6.2, zTurret + 1.8, 3.4, 0.95);
+        paintSphereInVolume(cx - 2.4, 9.5, zTurret + 1.6, 2.8, 0.85);
+        // Lamppost & bistro table in foreground
+        paintSphereInVolume(cx - 1.2, 1.8, zTurret + 2.2, 2.8, 0.95);
+        // Right-hand ochre window splash (seen in 00:00)
+        paintSphereInVolume(cx + 3.8, 2.6, zTurret + 2.6, 2.9, 0.90);
+      }
+
+      seedInitialCafeSplash();
+
+      // -------------------------------------------------------------------------
+      // 10. INTERACTION: WALKING [WASD], ORBIT [C], HOVER BRUSH & RESET
+      // -------------------------------------------------------------------------
+      let isOrbitMode = false;
+      const keys = { w: false, a: false, s: false, d: false, up: false, down: false, left: false, right: false };
+      const mouseNDC = new THREE.Vector2(99, 99);
+      const raycaster = new THREE.Raycaster();
+      let isDraggingLook = false;
+      let prevMouseX = 0;
+      let prevMouseY = 0;
+      let hasInteracted = false;
+
+      function hideHintAfterInteraction() {
+        if (!hasInteracted) {
+          hasInteracted = true;
+          setTimeout(() => {
+            if (hintPill) hintPill.style.opacity = '0';
+          }, 3500);
+        }
+      }
+
+      function setMode(orbit) {
+        isOrbitMode = orbit;
+        if (isOrbitMode) {
+          btnOrbit.classList.add('active');
+          btnWalk.classList.remove('active');
+          orbitControls.enabled = true;
+          const forward = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(player.pitch, player.yaw, 0, 'YXZ'));
+          orbitControls.target.copy(camera.position).addScaledVector(forward, 10.0);
+          orbitControls.update();
+        } else {
+          btnWalk.classList.add('active');
+          btnOrbit.classList.remove('active');
+          orbitControls.enabled = false;
+          // Sync player position back to ground level from current camera XZ
+          player.position.x = camera.position.x;
+          player.position.z = camera.position.z;
+          player.position.y = 2.35;
+        }
+      }
+
+      btnWalk.addEventListener('click', () => setMode(false));
+      btnOrbit.addEventListener('click', () => setMode(true));
+
+      btnReset.addEventListener('click', () => {
+        paintData.fill(0);
+        paintTexture3D.needsUpdate = true;
+      });
+
+      window.addEventListener('keydown', (e) => {
+        const k = e.key.toLowerCase();
+        if (k === 'w') keys.w = true;
+        if (k === 's') keys.s = true;
+        if (k === 'a') keys.a = true;
+        if (k === 'd') keys.d = true;
+        if (e.key === 'ArrowUp') keys.up = true;
+        if (e.key === 'ArrowDown') keys.down = true;
+        if (e.key === 'ArrowLeft') keys.left = true;
+        if (e.key === 'ArrowRight') keys.right = true;
+        if (k === 'c') setMode(!isOrbitMode);
+        hideHintAfterInteraction();
+      });
+
+      window.addEventListener('keyup', (e) => {
+        const k = e.key.toLowerCase();
+        if (k === 'w') keys.w = false;
+        if (k === 's') keys.s = false;
+        if (k === 'a') keys.a = false;
+        if (k === 'd') keys.d = false;
+        if (e.key === 'ArrowUp') keys.up = false;
+        if (e.key === 'ArrowDown') keys.down = false;
+        if (e.key === 'ArrowLeft') keys.left = false;
+        if (e.key === 'ArrowRight') keys.right = false;
+      });
+
+      // Mouse move: updates brush reticle, raycasts to paint 3D details, and handles drag-to-look
+      window.addEventListener('mousemove', (e) => {
+        reticle.style.opacity = '1';
+        reticle.style.transform = `translate3d(${e.clientX}px, ${e.clientY}px, 0)`;
+
+        mouseNDC.x = (e.clientX / window.innerWidth) * 2 - 1;
+        mouseNDC.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+        if (!isOrbitMode && isDraggingLook) {
+          const dx = e.clientX - prevMouseX;
+          const dy = e.clientY - prevMouseY;
+          prevMouseX = e.clientX;
+          prevMouseY = e.clientY;
+          player.targetYaw -= dx * 0.0032;
+          player.targetPitch = THREE.MathUtils.clamp(player.targetPitch - dy * 0.0028, -0.65, 0.72);
+        }
+
+        // Raycast hover watercolor brush
+        paintUnderCursor();
+      });
+
+      container.addEventListener('mousedown', (e) => {
+        if (!isOrbitMode) {
+          isDraggingLook = true;
+          prevMouseX = e.clientX;
+          prevMouseY = e.clientY;
+        }
+        paintUnderCursor(4.2);
+        hideHintAfterInteraction();
+      });
+
+      window.addEventListener('mouseup', () => {
+        isDraggingLook = false;
+      });
+
+      // Smooth scroll-wheel walk support in Street Walk mode
+      container.addEventListener('wheel', (e) => {
+        if (!isOrbitMode) {
+          e.preventDefault();
+          const forward = new THREE.Vector3(
+            -Math.sin(player.yaw),
+            0,
+            -Math.cos(player.yaw)
+          );
+          const step = Math.sign(e.deltaY) * -0.95;
+          player.position.addScaledVector(forward, step);
+          hideHintAfterInteraction();
+        }
+      }, { passive: false });
+
+      // Touch support for mobile/tablet
+      container.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 1) {
+          const t = e.touches[0];
+          prevMouseX = t.clientX;
+          prevMouseY = t.clientY;
+          isDraggingLook = true;
+          mouseNDC.x = (t.clientX / window.innerWidth) * 2 - 1;
+          mouseNDC.y = -(t.clientY / window.innerHeight) * 2 + 1;
+          paintUnderCursor(4.0);
+        }
+      }, { passive: true });
+
+      container.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 1) {
+          const t = e.touches[0];
+          mouseNDC.x = (t.clientX / window.innerWidth) * 2 - 1;
+          mouseNDC.y = -(t.clientY / window.innerHeight) * 2 + 1;
+          if (!isOrbitMode && isDraggingLook) {
+            const dx = t.clientX - prevMouseX;
+            const dy = t.clientY - prevMouseY;
+            prevMouseX = t.clientX;
+            prevMouseY = t.clientY;
+            player.targetYaw -= dx * 0.004;
+            player.targetPitch = THREE.MathUtils.clamp(player.targetPitch - dy * 0.0035, -0.65, 0.72);
+          }
+          paintUnderCursor(3.8);
+        }
+      }, { passive: true });
+
+      container.addEventListener('touchend', () => {
+        isDraggingLook = false;
+      });
+
+      /**
+       * Raycasts from the cursor against all visible street meshes and paints a 3D watercolor stroke.
+       */
+      function paintUnderCursor(brushRadius = 3.45) {
+        if (Math.abs(mouseNDC.x) > 1 || Math.abs(mouseNDC.y) > 1) return;
+        raycaster.setFromCamera(mouseNDC, camera);
+        raycaster.far = 48.0;
+
+        const meshes = [];
+        for (const group of activeChunks.values()) {
+          if (group.children[0]) meshes.push(group.children[0]);
+        }
+
+        const hits = raycaster.intersectObjects(meshes, false);
+        if (hits.length > 0) {
+          const p = hits[0].point;
+          // Scale brush slightly with distance so upper balconies & awnings paint smoothly
+          const distScale = THREE.MathUtils.clamp(hits[0].distance * 0.11, 0.85, 1.55);
+          paintSphereInVolume(p.x, p.y, p.z, brushRadius * distScale, 0.72);
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // 11. MAIN ANIMATION LOOP
+      // -------------------------------------------------------------------------
+      const clock = new THREE.Clock();
+
+      function animate() {
+        requestAnimationFrame(animate);
+        const dt = Math.min(clock.getDelta(), 0.05);
+
+        if (!isOrbitMode) {
+          // Smooth look interpolation
+          player.yaw = THREE.MathUtils.lerp(player.yaw, player.targetYaw, 0.16);
+          player.pitch = THREE.MathUtils.lerp(player.pitch, player.targetPitch, 0.16);
+
+          // WASD / Arrow movement
+          let moveForward = 0;
+          let moveRight = 0;
+          if (keys.w || keys.up) moveForward += 1;
+          if (keys.s || keys.down) moveForward -= 1;
+          if (keys.d || keys.right) moveRight += 1;
+          if (keys.a || keys.left) moveRight -= 1;
+
+          if (moveForward !== 0 || moveRight !== 0) {
+            const len = Math.hypot(moveForward, moveRight);
+            moveForward /= len;
+            moveRight /= len;
+
+            const forwardVec = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+            const rightVec = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+
+            player.position.addScaledVector(forwardVec, moveForward * player.speed * dt);
+            player.position.addScaledVector(rightVec, moveRight * player.speed * dt);
+
+            // Soft lateral bounds allowing entry into side courtyards while preventing walking through walls
+            const streetCenter = getStreetCenterX(player.position.z);
+            const zMod = ((-player.position.z % CHUNK_LENGTH) + CHUNK_LENGTH) % CHUNK_LENGTH;
+            const inCourtyardZone = zMod > 21.5 && zMod < 33.5;
+            const maxHalfWidth = inCourtyardZone ? 11.5 : 3.15;
+
+            player.position.x = THREE.MathUtils.clamp(
+              player.position.x,
+              streetCenter - maxHalfWidth,
+              streetCenter + maxHalfWidth
+            );
+
+            // Proximity watercolor aura bloom as you walk through the street
+            paintSphereInVolume(
+              player.position.x,
+              player.position.y + 1.2,
+              player.position.z - 2.2,
+              6.6,
+              0.42
+            );
+            paintSphereInVolume(
+              player.position.x - 3.2,
+              player.position.y + 3.4,
+              player.position.z - 1.5,
+              5.4,
+              0.36
+            );
+            paintSphereInVolume(
+              player.position.x + 3.2,
+              player.position.y + 3.4,
+              player.position.z - 1.5,
+              5.4,
+              0.36
+            );
+          }
+
+          camera.position.copy(player.position);
+          camera.rotation.order = 'YXZ';
+          camera.rotation.y = player.yaw;
+          camera.rotation.x = player.pitch;
+          camera.rotation.z = 0;
+        } else {
+          orbitControls.update();
+        }
+
+        // Update infinite street chunks & clear toroidal paint slice far ahead
+        const refZ = isOrbitMode ? orbitControls.target.z : player.position.z;
+        updateVisibleChunks(refZ);
+        clearVolumeSliceAtZ(refZ - 85.0);
+
+        // Snap directional light to texel grid relative to player to keep shadows rock-steady
+        const snapZ = Math.floor(refZ / 2.0) * 2.0;
+        const snapX = Math.floor(getStreetCenterX(snapZ) / 2.0) * 2.0;
+        dirLight.position.set(snapX + 18.0, 34.0, snapZ + 14.0);
+        dirLight.target.position.set(snapX, 0.0, snapZ - 12.0);
+        dirLight.target.updateMatrixWorld();
+
+        renderer.render(scene, camera);
+      }
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      animate();
+    };
+  </script>
+</body>
+</html>
