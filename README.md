@@ -1,2 +1,2 @@
 # 3DEuroStreet
-https://github.sprinorama.io/3DEuroStreet
+https://spinorama.github.io/3DEuroStreet
